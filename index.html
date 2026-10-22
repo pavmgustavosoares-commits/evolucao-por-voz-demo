@@ -56,14 +56,14 @@
         </div>
         <span class="step-number">02</span>
       </div>
-      <p class="muted">Este modelo de linguagem reescreve e organiza o relato no próprio navegador. A versão escolhida é pequena para tentar funcionar em celulares, mas o download é grande: cerca de 483 MB para os pesos quantizados, além da biblioteca e do modelo de voz. Use Wi-Fi e espaço livre.</p>
+      <p class="muted">Este modelo de linguagem reescreve e organiza o relato no próprio navegador. O download é grande: cerca de 483 MB para os pesos quantizados, além da biblioteca. Para reduzir travamentos, o app libera o modelo de voz antes de carregar a IA. Em celulares, a IA só tenta carregar pelo WebGPU; o modo CPU/WASM é bloqueado porque pode consumir memória demais.</p>
       <button id="loadAiBtn" class="button button-primary button-wide" type="button">
         <span class="button-icon" aria-hidden="true">⇩</span>
         <span id="loadAiLabel">Carregar IA generativa no dispositivo</span>
       </button>
       <div id="aiModelStatus" class="status-line" role="status" aria-live="polite">IA generativa ainda não carregada.</div>
       <div class="progress-track" aria-hidden="true"><div id="aiModelProgress" class="progress-fill"></div></div>
-      <p class="microcopy">O modelo escolhido é Qwen2.5-0.5B-Instruct quantizado, executado localmente com Transformers.js. A primeira carga precisa de internet para baixar biblioteca e pesos. O navegador faz o download de arquivos públicos, mas o áudio e o texto do atendimento não são enviados ao serviço de IA pela lógica deste app.</p>
+      <p class="microcopy">O modelo escolhido é Qwen2.5-0.5B-Instruct quantizado, executado localmente com Transformers.js. A primeira carga precisa de internet para baixar biblioteca e pesos. O app mantém apenas um dos dois modelos pesado carregado por vez; ao alternar entre IA e voz, o modelo anterior é liberado. Se o Chrome reiniciar novamente mesmo assim, não tente repetir várias vezes: este aparelho pode não ter memória suficiente para o modelo.</p>
     </section>
 
     <section class="card">

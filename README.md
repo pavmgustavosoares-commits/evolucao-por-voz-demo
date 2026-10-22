@@ -15,7 +15,7 @@ Protótipo demonstrativo em português para celular (iOS e Android). É uma apli
 
 - Voz: `onnx-community/whisper-tiny`, quantizado em Q8.
 - Organização textual: `onnx-community/Qwen2.5-0.5B-Instruct`.
-- Em aparelhos com WebGPU disponível, o protótipo tenta `q4f16` para o modelo generativo. Caso WebGPU não esteja disponível, tenta executar em WASM/CPU usando `q8`.
+- Em aparelhos com WebGPU disponível, o protótipo tenta `q4f16` para o modelo generativo. Em celulares, se WebGPU não estiver disponível, a aplicação interrompe a tentativa em vez de iniciar o modo WASM/CPU `q8`, para reduzir o risco de o navegador ser encerrado por excesso de memória.
 - A variante `q4f16` publicada no repositório do modelo tem cerca de 483 MB; a variante Q8 tem cerca de 512 MB, além de arquivos auxiliares, da biblioteca e do modelo de voz. Os tamanhos e suporte real variam com a configuração escolhida e podem mudar no repositório upstream.
 - A primeira configuração requer internet para carregar a biblioteca e baixar os pesos. O cache local pode permitir reutilização posterior, mas não se garante operação totalmente offline em todo navegador/dispositivo.
 
@@ -32,7 +32,7 @@ Protótipo demonstrativo em português para celular (iOS e Android). É uma apli
 
 - Não foi testado em aparelhos físicos iOS/Android nem numa variedade de navegadores.
 - O modelo generativo tem 0,5 bilhão de parâmetros e foi escolhido para reduzir o custo computacional. Pode responder lentamente, falhar ao produzir JSON válido, omitir conteúdo ou inventar informações. A interface preserva os campos se a resposta estruturada for inválida, mas o profissional deve revisar toda informação.
-- Manter Whisper e Qwen carregados ao mesmo tempo pode consumir bastante memória e levar alguns celulares a fechar a aba. Em aparelhos sem WebGPU, a inferência por CPU pode ficar muito lenta.
+- O protótipo agora tenta manter apenas um modelo pesado carregado por vez: libera Whisper antes de carregar Qwen e libera Qwen antes de carregar Whisper. Isso reduz, mas não elimina, o risco de falta de memória. Em celulares, o modo CPU/WASM para a IA generativa é bloqueado quando WebGPU não está disponível. O modelo ainda pode ser grande demais para determinados aparelhos.
 - O navegador pode suspender a aba, limitar memória ou apagar caches.
 - Não há integração automática com prontuário, login profissional, assinatura, trilha de auditoria institucional, permissões por função, backup ou sincronização.
 - O texto final é apenas um rascunho. A pessoa profissional é responsável por validar e inserir a evolução no sistema autorizado.
@@ -54,3 +54,12 @@ Campos institucionais e texto de interface estão em `index.html`. A transcriç�
 - Transformers.js / WebGPU: https://huggingface.co/docs/transformers.js/guides/webgpu
 - Modelo generativo ONNX: https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct
 - Modelo de voz ONNX: https://huggingface.co/onnx-community/whisper-tiny
+
+
+## Se o Chrome reiniciar ao terminar o download da IA
+
+1. Não tente carregar repetidamente; feche outras abas e aplicativos pesados e reinicie o celular uma vez.
+2. Atualize o arquivo `app.js`, `index.html`, `sw.js` e `README.md` no repositório GitHub pelo ZIP corrigido. O `sw.js` usa uma nova versão de cache para que o navegador busque os arquivos atualizados.
+3. Abra o endereço do site no Chrome e recarregue. Se ainda mostrar a interface antiga, limpe os dados do site desse endereço e abra novamente; isso pode obrigar a baixar os modelos outra vez.
+4. Carregue a IA generativa primeiro, sem iniciar o modelo Whisper. A nova versão libera automaticamente o modelo de voz antes de carregar a IA.
+5. Se o Chrome continuar reiniciando, não force modo CPU/WASM. Isso indica que o modelo local pode ser grande demais para a memória disponível desse celular ou que o WebGPU não está compatível. Neste caso, a solução é trocar por modelo menor ou por outra arquitetura; não é possível garantir IA generativa local em todo telefone.

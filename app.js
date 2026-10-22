@@ -50,18 +50,70 @@ function setAiModelProgress(value) {
   $('aiModelProgress').style.width = `${percent}%`;
 }
 
+function isMobileBrowser() {
+  const ua = navigator.userAgent || '';
+  return /Android|iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+async function disposePipelineSafely(instance) {
+  if (!instance) return;
+  try {
+    if (typeof instance.dispose === 'function') await instance.dispose();
+  } catch (error) {
+    console.warn('Não foi possível liberar completamente o modelo anterior.', error);
+  }
+}
+
+async function releaseTranscriberForMemory() {
+  const previous = transcriber;
+  transcriber = null;
+  modelLoadPromise = null;
+  await disposePipelineSafely(previous);
+  $('recordBtn').disabled = true;
+  $('transcribeBtn').disabled = true;
+  $('loadModelBtn').disabled = false;
+  $('loadModelLabel').textContent = 'Recarregar modelo de voz';
+  setStatus('modelStatus', 'Modelo de voz liberado para economizar memória. O texto já transcrito permanece nos campos.');
+  setModelProgress(0);
+}
+
+async function releaseTextGeneratorForMemory() {
+  const previous = textGenerator;
+  textGenerator = null;
+  aiModelLoadPromise = null;
+  await disposePipelineSafely(previous);
+  $('organizeAiBtn').disabled = true;
+  $('loadAiBtn').disabled = false;
+  $('loadAiLabel').textContent = 'Recarregar IA generativa local';
+  setStatus('aiModelStatus', 'IA generativa liberada para economizar memória. Os campos preenchidos continuam disponíveis.');
+  setStatus('aiStatus', 'A IA foi liberada da memória; carregue-a novamente quando precisar organizar o texto.');
+  setAiModelProgress(0);
+}
+
 async function loadTextGenerator() {
   if (textGenerator) return textGenerator;
   if (aiModelLoadPromise) return aiModelLoadPromise;
 
+  if (isRecording || (recordedBlob && recordedBlob.size > 0)) {
+    setStatus('aiModelStatus', 'Antes de carregar a IA, pare e transcreva ou descarte o áudio pendente. Isso evita manter áudio e modelos pesados juntos na memória.', 'error');
+    return null;
+  }
+
   $('loadAiBtn').disabled = true;
-  $('loadAiLabel').textContent = 'Carregando modelo…';
-  setStatus('aiModelStatus', 'Preparando o modelo generativo local. O download é grande; mantenha o navegador aberto e use Wi-Fi.');
+  $('loadModelBtn').disabled = true;
+  $('loadAiLabel').textContent = 'Preparando memória…';
+  setStatus('aiModelStatus', 'Liberando o modelo de voz, se estiver carregado, para reduzir o uso de memória antes de baixar a IA…');
   setAiModelProgress(1);
   let selectedWebGPU = false;
 
   aiModelLoadPromise = (async () => {
     try {
+      if (transcriber) await releaseTranscriberForMemory();
+      // Impede o carregamento simultâneo de dois modelos pesados no navegador móvel.
+      $('loadModelBtn').disabled = true;
+      $('loadAiLabel').textContent = 'Carregando modelo…';
+      setStatus('aiModelStatus', 'Preparando o modelo generativo local. Use Wi-Fi, mantenha o Chrome aberto e evite alternar de aplicativo.');
+
       const { pipeline, env } = await import(TRANSFORMERS_CDN);
       env.useBrowserCache = true;
       env.useWasmCache = true;
@@ -69,7 +121,8 @@ async function loadTextGenerator() {
       env.allowLocalModels = false;
 
       let useWebGPU = false;
-      const forceCpu = $('loadAiBtn').dataset.forceCpu === 'true';
+      const mobileDevice = isMobileBrowser();
+      const forceCpu = !mobileDevice && $('loadAiBtn').dataset.forceCpu === 'true';
       if (!forceCpu && 'gpu' in navigator && navigator.gpu?.requestAdapter) {
         try {
           const adapter = await navigator.gpu.requestAdapter();
@@ -80,13 +133,19 @@ async function loadTextGenerator() {
       }
 
       selectedWebGPU = useWebGPU;
+      if (mobileDevice && !useWebGPU) {
+        const unsupported = new Error('O navegador não disponibilizou WebGPU. Para evitar que o Chrome reinicie por falta de memória, o protótipo não tentará carregar o modelo maior em CPU/WASM no celular.');
+        unsupported.code = 'MOBILE_WEBGPU_UNAVAILABLE';
+        throw unsupported;
+      }
+
       const modelOptions = useWebGPU
         ? { device: 'webgpu', dtype: 'q4f16' }
         : { device: 'wasm', dtype: 'q8' };
 
       setStatus('aiModelStatus', useWebGPU
-        ? 'WebGPU detectado. Baixando e preparando o modelo quantizado para execução no dispositivo…'
-        : 'WebGPU não detectado. Tentando executar pelo processador; isso pode ser mais lento e usar mais memória…');
+        ? 'WebGPU detectado. Baixando e preparando o modelo quantizado. O download pode terminar antes da inicialização; não feche a página.'
+        : 'WebGPU não detectado. Tentando execução por CPU neste dispositivo não móvel…');
 
       textGenerator = await pipeline('text-generation', TEXT_MODEL_ID, {
         ...modelOptions,
@@ -98,7 +157,7 @@ async function loadTextGenerator() {
             setAiModelProgress(info.progress);
             setStatus('aiModelStatus', status === 'progress'
               ? `Baixando componente da IA${file ? `: ${file}` : ''} (${Math.round(info.progress)}%).`
-              : status === 'done' ? `Componente preparado${file ? `: ${file}` : ''}.` : `Preparando IA: ${status || 'carregando arquivos locais'}…`);
+              : status === 'done' ? `Componente preparado${file ? `: ${file}` : ''}; inicializando o modelo…` : `Preparando IA: ${status || 'carregando arquivos locais'}…`);
           } else if (status) {
             setStatus('aiModelStatus', `${status}${file ? `: ${file}` : ''}…`);
           }
@@ -109,7 +168,7 @@ async function loadTextGenerator() {
       $('loadAiLabel').textContent = 'IA generativa pronta';
       $('loadAiBtn').dataset.forceCpu = 'false';
       $('organizeAiBtn').disabled = false;
-      setStatus('aiModelStatus', `Modelo de IA carregado (${useWebGPU ? 'WebGPU' : 'processador'}). A organização do texto será executada neste navegador.`, 'success');
+      setStatus('aiModelStatus', `Modelo de IA carregado (${useWebGPU ? 'WebGPU' : 'processador'}). A organização será executada neste navegador.`, 'success');
       setStatus('aiStatus', 'IA pronta. Preencha ou transcreva o relato e toque em “Organizar relato com IA local”.', 'success');
       return textGenerator;
     } catch (error) {
@@ -117,16 +176,24 @@ async function loadTextGenerator() {
       aiModelLoadPromise = null;
       setAiModelProgress(0);
       $('loadAiBtn').disabled = false;
-      if (selectedWebGPU) {
+      $('loadModelBtn').disabled = false;
+      if (isMobileBrowser()) {
+        $('loadAiLabel').textContent = 'Tentar carregar IA novamente';
+        const msg = selectedWebGPU
+          ? 'O modelo não terminou de inicializar. Pode ser falta de memória, incompatibilidade do WebGPU ou falha de rede. Não tente forçar o modo CPU no celular; ele pode consumir ainda mais memória.'
+          : 'Este navegador não disponibilizou WebGPU. O modo CPU/WASM foi bloqueado neste celular para evitar um novo travamento. Tente atualizar o Chrome e o sistema; se continuar, este aparelho pode não suportar este modelo local.';
+        setStatus('aiModelStatus', `${msg} ${error?.message || ''}`, 'error');
+      } else if (selectedWebGPU) {
         $('loadAiBtn').dataset.forceCpu = 'true';
         $('loadAiLabel').textContent = 'Tentar modo CPU (mais lento)';
-        setStatus('aiModelStatus', `O carregamento pelo acelerador gráfico falhou. Toque novamente para tentar CPU/WASM; isso pode baixar outra variante de cerca de 512 MB. Detalhe: ${error?.message || 'erro desconhecido'}`, 'error');
+        setStatus('aiModelStatus', `O carregamento pelo acelerador gráfico falhou. É possível tentar CPU/WASM neste computador, mas isso pode baixar outra variante de cerca de 512 MB. Detalhe: ${error?.message || 'erro desconhecido'}`, 'error');
       } else {
         $('loadAiLabel').textContent = 'Tentar carregar IA novamente';
         setStatus('aiModelStatus', `Não foi possível carregar a IA local. Verifique conexão, memória e espaço livre. Detalhe: ${error?.message || 'erro desconhecido'}`, 'error');
       }
       throw error;
     } finally {
+      $('loadModelBtn').disabled = Boolean(transcriber) || Boolean(aiModelLoadPromise && !textGenerator);
       if (textGenerator) $('loadAiBtn').disabled = true;
     }
   })();
@@ -258,14 +325,22 @@ async function organizeWithAI() {
 async function loadTranscriber() {
   if (transcriber) return transcriber;
   if (modelLoadPromise) return modelLoadPromise;
+  if (isRecording) {
+    setStatus('modelStatus', 'Pare a gravação antes de trocar de modelo.', 'error');
+    return null;
+  }
 
   $('loadModelBtn').disabled = true;
-  $('loadModelLabel').textContent = 'Carregando…';
-  setStatus('modelStatus', 'Conectando à biblioteca e preparando o modelo local…');
+  $('loadAiBtn').disabled = true;
+  $('loadModelLabel').textContent = 'Preparando memória…';
+  setStatus('modelStatus', 'Liberando a IA generativa, se estiver carregada, antes de preparar a transcrição…');
   setModelProgress(2);
 
   modelLoadPromise = (async () => {
     try {
+      if (textGenerator) await releaseTextGeneratorForMemory();
+      $('loadAiBtn').disabled = true;
+      $('loadModelLabel').textContent = 'Carregando…';
       const { pipeline, env } = await import(TRANSFORMERS_CDN);
       env.useBrowserCache = true;
       env.useWasmCache = true;
@@ -294,7 +369,7 @@ async function loadTranscriber() {
       );
       setModelProgress(100);
       setStatus('modelStatus', 'Modelo carregado. A transcrição será executada no navegador.', 'success');
-      $('loadModelLabel').textContent = 'Modelo pronto';
+      $('loadModelLabel').textContent = 'Modelo de voz pronto';
       $('recordBtn').disabled = false;
       setStatus('recordStatus', 'Pronto. Escolha o campo e toque em “Gravar relato”.', 'success');
       return transcriber;
@@ -307,7 +382,9 @@ async function loadTranscriber() {
       setStatus('modelStatus', `Não foi possível carregar o modelo. Confira a conexão e o espaço livre e tente novamente. Detalhe: ${error?.message || 'erro desconhecido'}`, 'error');
       throw error;
     } finally {
+      $('loadAiBtn').disabled = Boolean(textGenerator) || Boolean(modelLoadPromise && !transcriber);
       if (transcriber) $('loadModelBtn').disabled = true;
+      else $('loadModelBtn').disabled = false;
     }
   })();
   return modelLoadPromise;
