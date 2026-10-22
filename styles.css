@@ -104,3 +104,6 @@ input:focus, select:focus, textarea:focus { border-color: #4e9780; box-shadow: 0
 .ai-action-panel { margin-top: 20px; padding: 15px; border: 1px solid #cee3d7; border-radius: 15px; background: linear-gradient(145deg, #f7fbf8, #edf6f0); }
 .ai-action-panel .muted { margin-bottom: 12px; }
 .ai-action-panel .editor-heading { margin-bottom: 10px; }
+
+.diag-output { white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.45; margin: 10px 0; padding: 10px; border-radius: 10px; background: rgba(22, 91, 73, 0.06); max-height: 260px; overflow: auto; }
+.diag-output:empty { display: none; }

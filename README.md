@@ -24,6 +24,7 @@ Protótipo demonstrativo em português para celular (iOS e Android). É uma apli
 - A lógica da aplicação executa a inferência de voz e de texto no navegador; não implementa chamadas a uma API de IA para enviar áudios, transcrições ou evoluções.
 - O áudio gravado fica em memória durante o fluxo e é descartado após transcrição ou limpeza.
 - Os campos clínicos não são salvos pelo app em `localStorage`, banco de dados ou servidor. Não há cadastro nem histórico de pacientes.
+- Exceção técnica: o app grava em `localStorage` um único marcador de diagnóstico (etapa e nome do arquivo de modelo em carregamento, com horário). Serve para identificar onde o navegador reiniciou e não contém dados clínicos.
 - Ao copiar, o texto passa para a área de transferência do aparelho. O aplicativo não consegue controlar o que o usuário faz depois com essa cópia.
 - O app depende de uma biblioteca importada de CDN e de pesos baixados dos repositórios públicos de modelos na primeira carga. Logo, esse protótipo **não foi auditado quanto à cadeia de fornecimento**, e não deve ser considerado uma aplicação de produção ou uma garantia absoluta de privacidade.
 - Não usar dados pessoais ou de saúde reais. Antes de qualquer uso clínico, são necessárias validação técnica, de segurança, institucional e jurídica/LGPD.
@@ -63,3 +64,12 @@ Campos institucionais e texto de interface estão em `index.html`. A transcriç�
 3. Abra o endereço do site no Chrome e recarregue. Se ainda mostrar a interface antiga, limpe os dados do site desse endereço e abra novamente; isso pode obrigar a baixar os modelos outra vez.
 4. Carregue a IA generativa primeiro, sem iniciar o modelo Whisper. A nova versão libera automaticamente o modelo de voz antes de carregar a IA.
 5. Se o Chrome continuar reiniciando, não force modo CPU/WASM. Isso indica que o modelo local pode ser grande demais para a memória disponível desse celular ou que o WebGPU não está compatível. Neste caso, a solução é trocar por modelo menor ou por outra arquitetura; não é possível garantir IA generativa local em todo telefone.
+
+
+## Alterações desta versão (diagnóstico do travamento)
+
+- **Etapa 0 — Diagnóstico do aparelho:** mostra WebGPU, `shader-f16`, limites de buffer, memória aproximada, armazenamento, `crossOriginIsolated` e arquivos de modelo em cache.
+- **Portão `shader-f16`:** a variante `q4f16` só é carregada se o adaptador WebGPU oferecer `shader-f16`. Em celulares sem ele, a IA é bloqueada com mensagem específica.
+- **IA em Web Worker (`ai-worker.js`):** ao liberar a IA, o worker é encerrado (`terminate()`), o que devolve a memória ao sistema. O Whisper ainda roda na thread principal.
+- **Marcador de carga:** se o Chrome reiniciar durante o carregamento, a página mostra a última etapa registrada.
+- **Não verificado:** se estas mudanças eliminam o reinício; WebGPU dentro de Worker no Safari/iOS; comportamento em aparelhos físicos.

@@ -1,9 +1,10 @@
-const CACHE_NAME = 'evolucao-voz-shell-v3';
+const CACHE_NAME = 'evolucao-voz-shell-v4';
 const APP_SHELL = [
   './',
   './index.html',
   './styles.css',
   './app.js',
+  './ai-worker.js',
   './manifest.webmanifest',
   './icon.svg'
 ];

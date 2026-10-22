@@ -55,6 +55,145 @@ function isMobileBrowser() {
   return /Android|iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }
 
+
+const BREADCRUMB_KEY = 'evolucao_diag_marcador';
+
+// Marcador técnico (etapa e arquivo de modelo). Não contém dados clínicos.
+function breadcrumb(stage, loading = false) {
+  try { localStorage.setItem(BREADCRUMB_KEY, JSON.stringify({ stage, loading, t: new Date().toISOString() })); } catch (_) {}
+}
+
+function readBreadcrumb() {
+  try { return JSON.parse(localStorage.getItem(BREADCRUMB_KEY) || 'null'); } catch (_) { return null; }
+}
+
+async function getWebGPUCapability() {
+  const cap = { available: false, f16: false, info: '', limits: null, reason: '' };
+  if (!('gpu' in navigator) || !navigator.gpu?.requestAdapter) { cap.reason = 'navigator.gpu ausente'; return cap; }
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) { cap.reason = 'requestAdapter() retornou nulo'; return cap; }
+    cap.available = true;
+    cap.f16 = adapter.features?.has('shader-f16') === true;
+    const info = adapter.info || (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : null);
+    if (info) cap.info = [info.vendor, info.architecture, info.description].filter(Boolean).join(' / ');
+    cap.limits = { maxBufferSize: adapter.limits?.maxBufferSize, maxStorageBufferBindingSize: adapter.limits?.maxStorageBufferBindingSize };
+    if (!cap.f16) cap.reason = 'shader-f16 ausente: a variante q4f16 não deve ser carregada neste aparelho';
+  } catch (error) {
+    cap.reason = `erro ao pedir adaptador: ${error?.message || error}`;
+  }
+  return cap;
+}
+
+function createAiWorker() {
+  const worker = new Worker('./ai-worker.js', { type: 'module' });
+  const pending = new Map();
+  let nextId = 1;
+  let onProgress = null;
+  let lastKey = '';
+  worker.onmessage = ({ data }) => {
+    if (data.type === 'progress') {
+      const i = data.info || {};
+      if (Number.isFinite(i.progress)) {
+        const key = `${i.file || ''}:${Math.floor(i.progress / 10)}`;
+        if (key !== lastKey) { lastKey = key; breadcrumb(`ia:${i.status || ''} ${i.file || ''} ${Math.round(i.progress)}%`, true); }
+      } else if (i.status) {
+        breadcrumb(`ia:${i.status} ${i.file || ''}`, true);
+      }
+      if (onProgress) onProgress(i);
+      return;
+    }
+    const entry = pending.get(data.id);
+    if (!entry) return;
+    pending.delete(data.id);
+    if (data.type === 'error') entry.reject(new Error(data.message));
+    else entry.resolve(data.result);
+  };
+  worker.onerror = (event) => {
+    for (const entry of pending.values()) entry.reject(new Error(event.message || 'Falha no processo da IA.'));
+    pending.clear();
+  };
+  const call = (type, payload) => new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, { resolve, reject });
+    worker.postMessage({ id, type, ...payload });
+  });
+  return {
+    setProgress(fn) { onProgress = fn; },
+    load: (opts) => call('load', opts),
+    generate: (messages, options) => call('generate', { messages, options }),
+    async dispose() { worker.terminate(); pending.clear(); }
+  };
+}
+
+async function collectDiagnostics() {
+  const lines = [];
+  const add = (key, value) => lines.push(`${key}: ${value}`);
+  const mb = (n) => (Number.isFinite(n) ? Math.round(n / 1048576) : 'n/d');
+  add('Data', new Date().toISOString());
+  add('Navegador', navigator.userAgent);
+  add('Contexto seguro (HTTPS)', window.isSecureContext);
+  add('Instalado (standalone)', Boolean(window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone));
+  add('Memória aprox. em GB (máx. 8)', navigator.deviceMemory ?? 'indisponível');
+  add('Núcleos de CPU', navigator.hardwareConcurrency ?? 'indisponível');
+  add('crossOriginIsolated (WASM multithread)', window.crossOriginIsolated);
+  add('Web Worker disponível', typeof Worker !== 'undefined');
+  try {
+    const est = await navigator.storage?.estimate?.();
+    if (est) add('Armazenamento', `${mb(est.usage)} MB usados de ~${mb(est.quota)} MB`);
+  } catch (_) {}
+  const cap = await getWebGPUCapability();
+  add('WebGPU: adaptador disponível', cap.available);
+  add('WebGPU: shader-f16', cap.f16);
+  if (cap.info) add('GPU', cap.info);
+  if (cap.limits) {
+    add('maxBufferSize (MB)', mb(cap.limits.maxBufferSize));
+    add('maxStorageBufferBindingSize (MB)', mb(cap.limits.maxStorageBufferBindingSize));
+  }
+  if (cap.reason) add('Observação WebGPU', cap.reason);
+  try {
+    for (const name of await caches.keys()) {
+      const cache = await caches.open(name);
+      const keys = await cache.keys();
+      const heavy = keys.map((r) => r.url.split('/').slice(-3).join('/')).filter((u) => /\.(onnx|wasm)/.test(u));
+      add(`Cache "${name}"`, `${keys.length} item(ns)${heavy.length ? '; pesados: ' + heavy.join(', ') : ''}`);
+    }
+  } catch (_) {}
+  const crumb = readBreadcrumb();
+  if (crumb) add('Último marcador de carga', `${crumb.stage} (${crumb.t})${crumb.loading ? ' — carregamento NÃO concluído' : ''}`);
+  return lines.join('\n');
+}
+
+async function runDiagnostics() {
+  $('diagBtn').disabled = true;
+  setStatus('diagStatus', 'Coletando informações do aparelho…');
+  try {
+    $('diagOutput').textContent = await collectDiagnostics();
+    $('diagCopyBtn').disabled = false;
+    setStatus('diagStatus', 'Diagnóstico pronto. Contém apenas dados técnicos do aparelho, nenhum dado clínico.', 'success');
+  } catch (error) {
+    setStatus('diagStatus', `Não foi possível coletar o diagnóstico. ${error?.message || ''}`, 'error');
+  } finally {
+    $('diagBtn').disabled = false;
+  }
+}
+
+async function copyDiagnostics() {
+  try {
+    await navigator.clipboard.writeText($('diagOutput').textContent);
+    setStatus('diagStatus', 'Diagnóstico copiado.', 'success');
+  } catch (_) {
+    setStatus('diagStatus', 'Não foi possível copiar automaticamente. Selecione o texto manualmente.');
+  }
+}
+
+function reportInterruptedLoad() {
+  const crumb = readBreadcrumb();
+  if (crumb?.loading) {
+    setStatus('diagStatus', `O carregamento anterior foi interrompido (provável reinício do navegador). Último marcador: ${crumb.stage}. Toque em “Coletar diagnóstico” e envie o resultado.`, 'error');
+  }
+}
+
 async function disposePipelineSafely(instance) {
   if (!instance) return;
   try {
@@ -105,36 +244,29 @@ async function loadTextGenerator() {
   setStatus('aiModelStatus', 'Liberando o modelo de voz, se estiver carregado, para reduzir o uso de memória antes de baixar a IA…');
   setAiModelProgress(1);
   let selectedWebGPU = false;
+  let aiWorker = null;
 
   aiModelLoadPromise = (async () => {
     try {
+      breadcrumb('ia:inicio', true);
       if (transcriber) await releaseTranscriberForMemory();
       // Impede o carregamento simultâneo de dois modelos pesados no navegador móvel.
       $('loadModelBtn').disabled = true;
       $('loadAiLabel').textContent = 'Carregando modelo…';
       setStatus('aiModelStatus', 'Preparando o modelo generativo local. Use Wi-Fi, mantenha o Chrome aberto e evite alternar de aplicativo.');
 
-      const { pipeline, env } = await import(TRANSFORMERS_CDN);
-      env.useBrowserCache = true;
-      env.useWasmCache = true;
-      env.allowRemoteModels = true;
-      env.allowLocalModels = false;
-
       let useWebGPU = false;
+      let gpuCap = { available: false, f16: false, reason: '' };
       const mobileDevice = isMobileBrowser();
       const forceCpu = !mobileDevice && $('loadAiBtn').dataset.forceCpu === 'true';
-      if (!forceCpu && 'gpu' in navigator && navigator.gpu?.requestAdapter) {
-        try {
-          const adapter = await navigator.gpu.requestAdapter();
-          useWebGPU = Boolean(adapter);
-        } catch (_) {
-          useWebGPU = false;
-        }
+      if (!forceCpu) {
+        gpuCap = await getWebGPUCapability();
+        useWebGPU = gpuCap.available && gpuCap.f16;
       }
 
       selectedWebGPU = useWebGPU;
       if (mobileDevice && !useWebGPU) {
-        const unsupported = new Error('O navegador não disponibilizou WebGPU. Para evitar que o Chrome reinicie por falta de memória, o protótipo não tentará carregar o modelo maior em CPU/WASM no celular.');
+        const unsupported = new Error((gpuCap.available && !gpuCap.f16 ? 'O WebGPU deste aparelho não oferece o recurso shader-f16, exigido pela variante q4f16. ' : 'O navegador não disponibilizou WebGPU. ') + 'Para evitar que o Chrome reinicie por falta de memória, o protótipo não tentará carregar o modelo maior em CPU/WASM no celular.');
         unsupported.code = 'MOBILE_WEBGPU_UNAVAILABLE';
         throw unsupported;
       }
@@ -147,9 +279,8 @@ async function loadTextGenerator() {
         ? 'WebGPU detectado. Baixando e preparando o modelo quantizado. O download pode terminar antes da inicialização; não feche a página.'
         : 'WebGPU não detectado. Tentando execução por CPU neste dispositivo não móvel…');
 
-      textGenerator = await pipeline('text-generation', TEXT_MODEL_ID, {
-        ...modelOptions,
-        progress_callback: (info) => {
+      aiWorker = createAiWorker();
+      aiWorker.setProgress((info) => {
           if (!info || typeof info !== 'object') return;
           const status = info.status || '';
           const file = info.file || info.name || '';
@@ -161,8 +292,10 @@ async function loadTextGenerator() {
           } else if (status) {
             setStatus('aiModelStatus', `${status}${file ? `: ${file}` : ''}…`);
           }
-        }
       });
+      await aiWorker.load({ cdn: TRANSFORMERS_CDN, modelId: TEXT_MODEL_ID, ...modelOptions });
+      textGenerator = aiWorker;
+      breadcrumb('ia:carregada', false);
 
       setAiModelProgress(100);
       $('loadAiLabel').textContent = 'IA generativa pronta';
@@ -172,6 +305,8 @@ async function loadTextGenerator() {
       setStatus('aiStatus', 'IA pronta. Preencha ou transcreva o relato e toque em “Organizar relato com IA local”.', 'success');
       return textGenerator;
     } catch (error) {
+      if (aiWorker) { aiWorker.dispose(); aiWorker = null; }
+      breadcrumb(`ia:erro ${error?.message || ''}`.slice(0, 160), false);
       textGenerator = null;
       aiModelLoadPromise = null;
       setAiModelProgress(0);
@@ -295,7 +430,7 @@ async function organizeWithAI() {
   setStatus('aiStatus', 'A IA está organizando o relato no próprio navegador. Em celulares, isso pode levar algum tempo…');
 
   try {
-    const result = await textGenerator(messages, {
+    const result = await textGenerator.generate(messages, {
       max_new_tokens: 400,
       do_sample: false,
       repetition_penalty: 1.05
@@ -661,6 +796,9 @@ function init() {
   $('generateBtn').addEventListener('click', buildEvolution);
   $('copyBtn').addEventListener('click', copyOutput);
   $('clearBtn').addEventListener('click', clearAll);
+  $('diagBtn').addEventListener('click', runDiagnostics);
+  $('diagCopyBtn').addEventListener('click', copyDiagnostics);
+  reportInterruptedLoad();
 
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
     setStatus('recordStatus', 'Este navegador pode não ser compatível com gravação de áudio. Os campos também aceitam digitação manual.');

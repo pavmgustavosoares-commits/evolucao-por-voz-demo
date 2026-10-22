@@ -30,6 +30,21 @@
       </div>
     </section>
 
+    <section class="card">
+      <div class="card-heading">
+        <div>
+          <p class="eyebrow">ETAPA 0</p>
+          <h2>Diagnóstico do aparelho</h2>
+        </div>
+        <span class="step-number">00</span>
+      </div>
+      <p class="muted">Rode isto antes de carregar a IA. Mostra o suporte a WebGPU (incluindo shader-f16), memória aproximada, armazenamento e arquivos de modelo em cache. Se o navegador reiniciar durante o carregamento, a mensagem abaixo indica em que etapa parou. Não inclui dados clínicos.</p>
+      <button id="diagBtn" class="button button-secondary button-wide" type="button">Coletar diagnóstico</button>
+      <div id="diagStatus" class="status-line" role="status" aria-live="polite"></div>
+      <pre id="diagOutput" class="diag-output" aria-label="Resultado do diagnóstico"></pre>
+      <button id="diagCopyBtn" class="button button-secondary button-wide" type="button" disabled>Copiar diagnóstico</button>
+    </section>
+
     <section class="card model-card">
       <div class="card-heading">
         <div>
