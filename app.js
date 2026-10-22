@@ -1,815 +1,408 @@
-const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1';
-const MODEL_ID = 'onnx-community/whisper-tiny';
-const TEXT_MODEL_ID = 'onnx-community/Qwen2.5-0.5B-Instruct';
+// Controlador de Interface, Reconhecimento de Fala e Orquestração
 
-const $ = (id) => document.getElementById(id);
-const fields = ['objective', 'activity', 'response', 'supports', 'continuity', 'free'];
-let transcriber = null;
-let textGenerator = null;
-let recorder = null;
-let mediaStream = null;
-let recordedChunks = [];
-let recordedBlob = null;
-let isRecording = false;
-let timerInterval = null;
-let startedAt = 0;
-let recordingTimeout = null;
-let modelLoadPromise = null;
-let aiModelLoadPromise = null;
-let lastGenerated = '';
+let aiWorker = null;
+let isAiLoaded = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let recordTimerInterval = null;
+let recordSeconds = 0;
+let speechRecognizer = null;
 
-const friendlyFieldNames = {
-  objective: 'Objetivo terapêutico',
-  activity: 'Atividade e estratégias',
-  response: 'Resposta observada',
-  supports: 'Apoios necessários',
-  continuity: 'Continuidade / próximos passos',
-  free: 'Relato original para organização'
+const dom = {
+  // Diagnóstico
+  diagBtn: document.getElementById('diagBtn'),
+  diagStatus: document.getElementById('diagStatus'),
+  diagOutput: document.getElementById('diagOutput'),
+  diagCopyBtn: document.getElementById('diagCopyBtn'),
+
+  // Etapa 1: Voz
+  loadModelBtn: document.getElementById('loadModelBtn'),
+  loadModelLabel: document.getElementById('loadModelLabel'),
+  modelStatus: document.getElementById('modelStatus'),
+  modelProgress: document.getElementById('modelProgress'),
+
+  // Etapa 2: IA Generativa
+  loadAiBtn: document.getElementById('loadAiBtn'),
+  loadAiLabel: document.getElementById('loadAiLabel'),
+  aiModelStatus: document.getElementById('aiModelStatus'),
+  aiModelProgress: document.getElementById('aiModelProgress'),
+
+  // Etapa 3: Contexto
+  specialty: document.getElementById('specialty'),
+  modality: document.getElementById('modality'),
+  sessionDate: document.getElementById('sessionDate'),
+
+  // Etapa 4: Gravação e Campos
+  targetField: document.getElementById('targetField'),
+  recordBtn: document.getElementById('recordBtn'),
+  stopBtn: document.getElementById('stopBtn'),
+  transcribeBtn: document.getElementById('transcribeBtn'),
+  recordStatus: document.getElementById('recordStatus'),
+  recordTitle: document.getElementById('recordTitle'),
+  recordDescription: document.getElementById('recordDescription'),
+  recordTimer: document.getElementById('recordTimer'),
+  recordIcon: document.getElementById('recordIcon'),
+
+  // Campos estruturados
+  objective: document.getElementById('objective'),
+  activity: document.getElementById('activity'),
+  response: document.getElementById('response'),
+  supports: document.getElementById('supports'),
+  continuity: document.getElementById('continuity'),
+  free: document.getElementById('free'),
+
+  // Ação IA
+  organizeAiBtn: document.getElementById('organizeAiBtn'),
+  aiStatus: document.getElementById('aiStatus'),
+
+  // Etapa 5: Saída
+  generateBtn: document.getElementById('generateBtn'),
+  outputText: document.getElementById('outputText'),
+  copyBtn: document.getElementById('copyBtn'),
+  clearBtn: document.getElementById('clearBtn'),
+  copyStatus: document.getElementById('copyStatus')
 };
 
-function setStatus(id, message, kind = '') {
-  const node = $(id);
-  node.textContent = message;
-  node.dataset.kind = kind;
-}
+// Data padrão hoje
+dom.sessionDate.value = new Date().toISOString().split('T')[0];
 
-function formatTimer(ms) {
-  const total = Math.floor(ms / 1000);
-  const mm = String(Math.floor(total / 60)).padStart(2, '0');
-  const ss = String(total % 60).padStart(2, '0');
-  return `${mm}:${ss}`;
-}
+// ==========================================
+// ETAPA 0: DIAGNÓSTICO DO DISPOSITIVO
+// ==========================================
+dom.diagBtn.addEventListener('click', async () => {
+  dom.diagStatus.textContent = 'Coletando métricas do hardware...';
+  const info = {
+    userAgent: navigator.userAgent,
+    memoryEstimate: navigator.deviceMemory ? `~${navigator.deviceMemory} GB` : 'Não informada pela API',
+    hardwareConcurrency: navigator.hardwareConcurrency ? `${navigator.hardwareConcurrency} cores` : 'Desconhecido',
+    isCrossOriginIsolated: window.crossOriginIsolated || false,
+    webGPU: false,
+    shaderF16: false,
+    storage: {}
+  };
 
-function setModelProgress(value) {
-  const percent = Math.max(0, Math.min(100, Number(value) || 0));
-  $('modelProgress').style.width = `${percent}%`;
-}
-
-function setAiModelProgress(value) {
-  const percent = Math.max(0, Math.min(100, Number(value) || 0));
-  $('aiModelProgress').style.width = `${percent}%`;
-}
-
-function isMobileBrowser() {
-  const ua = navigator.userAgent || '';
-  return /Android|iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-}
-
-
-const BREADCRUMB_KEY = 'evolucao_diag_marcador';
-
-// Marcador técnico (etapa e arquivo de modelo). Não contém dados clínicos.
-function breadcrumb(stage, loading = false) {
-  try { localStorage.setItem(BREADCRUMB_KEY, JSON.stringify({ stage, loading, t: new Date().toISOString() })); } catch (_) {}
-}
-
-function readBreadcrumb() {
-  try { return JSON.parse(localStorage.getItem(BREADCRUMB_KEY) || 'null'); } catch (_) { return null; }
-}
-
-async function getWebGPUCapability() {
-  const cap = { available: false, f16: false, info: '', limits: null, reason: '' };
-  if (!('gpu' in navigator) || !navigator.gpu?.requestAdapter) { cap.reason = 'navigator.gpu ausente'; return cap; }
-  try {
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) { cap.reason = 'requestAdapter() retornou nulo'; return cap; }
-    cap.available = true;
-    cap.f16 = adapter.features?.has('shader-f16') === true;
-    const info = adapter.info || (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : null);
-    if (info) cap.info = [info.vendor, info.architecture, info.description].filter(Boolean).join(' / ');
-    cap.limits = { maxBufferSize: adapter.limits?.maxBufferSize, maxStorageBufferBindingSize: adapter.limits?.maxStorageBufferBindingSize };
-    if (!cap.f16) cap.reason = 'shader-f16 ausente: a variante q4f16 não deve ser carregada neste aparelho';
-  } catch (error) {
-    cap.reason = `erro ao pedir adaptador: ${error?.message || error}`;
-  }
-  return cap;
-}
-
-function createAiWorker() {
-  const worker = new Worker('./ai-worker.js', { type: 'module' });
-  const pending = new Map();
-  let nextId = 1;
-  let onProgress = null;
-  let lastKey = '';
-  worker.onmessage = ({ data }) => {
-    if (data.type === 'progress') {
-      const i = data.info || {};
-      if (Number.isFinite(i.progress)) {
-        const key = `${i.file || ''}:${Math.floor(i.progress / 10)}`;
-        if (key !== lastKey) { lastKey = key; breadcrumb(`ia:${i.status || ''} ${i.file || ''} ${Math.round(i.progress)}%`, true); }
-      } else if (i.status) {
-        breadcrumb(`ia:${i.status} ${i.file || ''}`, true);
+  if ('gpu' in navigator) {
+    try {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (adapter) {
+        info.webGPU = true;
+        info.shaderF16 = adapter.features.has('shader-f16');
+        info.limits = {
+          maxBufferSize: `${Math.round(adapter.limits.maxBufferSize / (1024 * 1024))} MB`,
+          maxStorageBufferBindingSize: `${Math.round(adapter.limits.maxStorageBufferBindingSize / (1024 * 1024))} MB`
+        };
       }
-      if (onProgress) onProgress(i);
-      return;
+    } catch (e) {
+      info.webGPUError = e.message;
     }
-    const entry = pending.get(data.id);
-    if (!entry) return;
-    pending.delete(data.id);
-    if (data.type === 'error') entry.reject(new Error(data.message));
-    else entry.resolve(data.result);
-  };
-  worker.onerror = (event) => {
-    for (const entry of pending.values()) entry.reject(new Error(event.message || 'Falha no processo da IA.'));
-    pending.clear();
-  };
-  const call = (type, payload) => new Promise((resolve, reject) => {
-    const id = nextId++;
-    pending.set(id, { resolve, reject });
-    worker.postMessage({ id, type, ...payload });
+  }
+
+  if (navigator.storage && navigator.storage.estimate) {
+    try {
+      const estimate = await navigator.storage.estimate();
+      info.storage = {
+        usage: `${Math.round((estimate.usage || 0) / (1024 * 1024))} MB`,
+        quota: `${Math.round((estimate.quota || 0) / (1024 * 1024))} MB`
+      };
+    } catch (_) {}
+  }
+
+  // Verifica se há registro do último crash
+  const lastCrashMarker = localStorage.getItem('last_debug_step');
+  if (lastCrashMarker) {
+    info.lastCrashMarker = lastCrashMarker;
+  }
+
+  dom.diagOutput.textContent = JSON.stringify(info, null, 2);
+  dom.diagStatus.textContent = 'Diagnóstico concluído com sucesso.';
+  dom.diagStatus.setAttribute('data-kind', 'success');
+  dom.diagCopyBtn.disabled = false;
+});
+
+dom.diagCopyBtn.addEventListener('click', () => {
+  navigator.clipboard.writeText(dom.diagOutput.textContent).then(() => {
+    dom.diagStatus.textContent = 'Diagnóstico copiado para a área de transferência!';
   });
-  return {
-    setProgress(fn) { onProgress = fn; },
-    load: (opts) => call('load', opts),
-    generate: (messages, options) => call('generate', { messages, options }),
-    async dispose() { worker.terminate(); pending.clear(); }
+});
+
+// ==========================================
+// ETAPA 1: PREPARAÇÃO DA VOZ
+// ==========================================
+// Identifica se há suporte nativo para Speech Recognition (Web Speech API)
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+dom.loadModelBtn.addEventListener('click', () => {
+  if (SpeechRecognition) {
+    dom.modelStatus.textContent = 'Suporte de voz nativo do sistema ativado! Pronto para gravar sem downloads.';
+    dom.modelStatus.setAttribute('data-kind', 'success');
+    dom.modelProgress.style.width = '100%';
+    dom.recordBtn.disabled = false;
+    dom.recordStatus.textContent = 'Clique em "Gravar relato" para começar a ditar.';
+    dom.loadModelBtn.disabled = true;
+    dom.loadModelLabel.textContent = 'Voz nativa do aparelho ativa';
+  } else {
+    dom.modelStatus.textContent = 'SpeechRecognition nativo não disponível. Usando transcrição padrão via teclado/microfone.';
+    dom.recordBtn.disabled = false;
+  }
+});
+
+// ==========================================
+// ETAPA 2: IA GENERATIVA EM WEB WORKER
+// ==========================================
+function initAiWorker() {
+  if (aiWorker) {
+    aiWorker.terminate();
+  }
+  aiWorker = new Worker('./ai-worker.js', { type: 'module' });
+
+  aiWorker.onmessage = (e) => {
+    const { type, message, progress, result } = e.data;
+
+    if (type === 'STATUS') {
+      dom.aiModelStatus.textContent = message;
+    } else if (type === 'PROGRESS') {
+      dom.aiModelProgress.style.width = `${progress}%`;
+      dom.aiModelStatus.textContent = `Baixando modelo: ${progress}%`;
+    } else if (type === 'LOADED') {
+      isAiLoaded = true;
+      dom.aiModelStatus.textContent = message;
+      dom.aiModelStatus.setAttribute('data-kind', 'success');
+      dom.aiModelProgress.style.width = '100%';
+      dom.loadAiBtn.disabled = true;
+      dom.loadAiLabel.textContent = 'IA Generativa pronta no aparelho';
+      dom.organizeAiBtn.disabled = false;
+      dom.aiStatus.textContent = 'Toque no botão acima para organizar o relato.';
+      localStorage.setItem('last_debug_step', 'AI_LOADED_OK');
+    } else if (type === 'GENERATED') {
+      applyStructuredOutput(result);
+      dom.organizeAiBtn.disabled = false;
+      dom.aiStatus.textContent = 'Relato organizado pela IA. Revise os campos abaixo.';
+      dom.aiStatus.setAttribute('data-kind', 'success');
+    } else if (type === 'ERROR') {
+      dom.aiModelStatus.textContent = message;
+      dom.aiModelStatus.setAttribute('data-kind', 'error');
+      dom.loadAiBtn.disabled = false;
+      dom.organizeAiBtn.disabled = false;
+      dom.aiStatus.textContent = message;
+      dom.aiStatus.setAttribute('data-kind', 'error');
+    }
   };
 }
 
-async function collectDiagnostics() {
-  const lines = [];
-  const add = (key, value) => lines.push(`${key}: ${value}`);
-  const mb = (n) => (Number.isFinite(n) ? Math.round(n / 1048576) : 'n/d');
-  add('Data', new Date().toISOString());
-  add('Navegador', navigator.userAgent);
-  add('Contexto seguro (HTTPS)', window.isSecureContext);
-  add('Instalado (standalone)', Boolean(window.matchMedia?.('(display-mode: standalone)').matches || navigator.standalone));
-  add('Memória aprox. em GB (máx. 8)', navigator.deviceMemory ?? 'indisponível');
-  add('Núcleos de CPU', navigator.hardwareConcurrency ?? 'indisponível');
-  add('crossOriginIsolated (WASM multithread)', window.crossOriginIsolated);
-  add('Web Worker disponível', typeof Worker !== 'undefined');
-  try {
-    const est = await navigator.storage?.estimate?.();
-    if (est) add('Armazenamento', `${mb(est.usage)} MB usados de ~${mb(est.quota)} MB`);
-  } catch (_) {}
-  const cap = await getWebGPUCapability();
-  add('WebGPU: adaptador disponível', cap.available);
-  add('WebGPU: shader-f16', cap.f16);
-  if (cap.info) add('GPU', cap.info);
-  if (cap.limits) {
-    add('maxBufferSize (MB)', mb(cap.limits.maxBufferSize));
-    add('maxStorageBufferBindingSize (MB)', mb(cap.limits.maxStorageBufferBindingSize));
-  }
-  if (cap.reason) add('Observação WebGPU', cap.reason);
-  try {
-    for (const name of await caches.keys()) {
-      const cache = await caches.open(name);
-      const keys = await cache.keys();
-      const heavy = keys.map((r) => r.url.split('/').slice(-3).join('/')).filter((u) => /\.(onnx|wasm)/.test(u));
-      add(`Cache "${name}"`, `${keys.length} item(ns)${heavy.length ? '; pesados: ' + heavy.join(', ') : ''}`);
-    }
-  } catch (_) {}
-  const crumb = readBreadcrumb();
-  if (crumb) add('Último marcador de carga', `${crumb.stage} (${crumb.t})${crumb.loading ? ' — carregamento NÃO concluído' : ''}`);
-  return lines.join('\n');
+dom.loadAiBtn.addEventListener('click', () => {
+  localStorage.setItem('last_debug_step', `START_LOAD_AI_${new Date().toISOString()}`);
+  dom.loadAiBtn.disabled = true;
+  dom.aiModelStatus.textContent = 'Inicializando worker isolado...';
+  initAiWorker();
+  aiWorker.postMessage({ type: 'LOAD_AI' });
+});
+
+// ==========================================
+// ETAPA 4: GRAVAÇÃO E RECONHECIMENTO DE FALA
+// ==========================================
+function startTimer() {
+  recordSeconds = 0;
+  dom.recordTimer.textContent = '00:00';
+  recordTimerInterval = setInterval(() => {
+    recordSeconds++;
+    const m = String(Math.floor(recordSeconds / 60)).padStart(2, '0');
+    const s = String(recordSeconds % 60).padStart(2, '0');
+    dom.recordTimer.textContent = `${m}:${s}`;
+  }, 1000);
 }
 
-async function runDiagnostics() {
-  $('diagBtn').disabled = true;
-  setStatus('diagStatus', 'Coletando informações do aparelho…');
-  try {
-    $('diagOutput').textContent = await collectDiagnostics();
-    $('diagCopyBtn').disabled = false;
-    setStatus('diagStatus', 'Diagnóstico pronto. Contém apenas dados técnicos do aparelho, nenhum dado clínico.', 'success');
-  } catch (error) {
-    setStatus('diagStatus', `Não foi possível coletar o diagnóstico. ${error?.message || ''}`, 'error');
-  } finally {
-    $('diagBtn').disabled = false;
-  }
+function stopTimer() {
+  clearInterval(recordTimerInterval);
 }
 
-async function copyDiagnostics() {
-  try {
-    await navigator.clipboard.writeText($('diagOutput').textContent);
-    setStatus('diagStatus', 'Diagnóstico copiado.', 'success');
-  } catch (_) {
-    setStatus('diagStatus', 'Não foi possível copiar automaticamente. Selecione o texto manualmente.');
-  }
-}
+dom.recordBtn.addEventListener('click', () => {
+  if (SpeechRecognition) {
+    speechRecognizer = new SpeechRecognition();
+    speechRecognizer.lang = 'pt-BR';
+    speechRecognizer.continuous = true;
+    speechRecognizer.interimResults = true;
 
-function reportInterruptedLoad() {
-  const crumb = readBreadcrumb();
-  if (crumb?.loading) {
-    setStatus('diagStatus', `O carregamento anterior foi interrompido (provável reinício do navegador). Último marcador: ${crumb.stage}. Toque em “Coletar diagnóstico” e envie o resultado.`, 'error');
-  }
-}
+    speechRecognizer.onstart = () => {
+      startTimer();
+      dom.recordBtn.classList.add('recording');
+      dom.recordBtn.disabled = true;
+      dom.stopBtn.disabled = false;
+      dom.recordTitle.textContent = 'Ouvindo e transcrevendo...';
+      dom.recordDescription.textContent = 'Fale claramente ao microfone do aparelho.';
+      dom.recordIcon.classList.add('active');
+    };
 
-async function disposePipelineSafely(instance) {
-  if (!instance) return;
-  try {
-    if (typeof instance.dispose === 'function') await instance.dispose();
-  } catch (error) {
-    console.warn('Não foi possível liberar completamente o modelo anterior.', error);
-  }
-}
-
-async function releaseTranscriberForMemory() {
-  const previous = transcriber;
-  transcriber = null;
-  modelLoadPromise = null;
-  await disposePipelineSafely(previous);
-  $('recordBtn').disabled = true;
-  $('transcribeBtn').disabled = true;
-  $('loadModelBtn').disabled = false;
-  $('loadModelLabel').textContent = 'Recarregar modelo de voz';
-  setStatus('modelStatus', 'Modelo de voz liberado para economizar memória. O texto já transcrito permanece nos campos.');
-  setModelProgress(0);
-}
-
-async function releaseTextGeneratorForMemory() {
-  const previous = textGenerator;
-  textGenerator = null;
-  aiModelLoadPromise = null;
-  await disposePipelineSafely(previous);
-  $('organizeAiBtn').disabled = true;
-  $('loadAiBtn').disabled = false;
-  $('loadAiLabel').textContent = 'Recarregar IA generativa local';
-  setStatus('aiModelStatus', 'IA generativa liberada para economizar memória. Os campos preenchidos continuam disponíveis.');
-  setStatus('aiStatus', 'A IA foi liberada da memória; carregue-a novamente quando precisar organizar o texto.');
-  setAiModelProgress(0);
-}
-
-async function loadTextGenerator() {
-  if (textGenerator) return textGenerator;
-  if (aiModelLoadPromise) return aiModelLoadPromise;
-
-  if (isRecording || (recordedBlob && recordedBlob.size > 0)) {
-    setStatus('aiModelStatus', 'Antes de carregar a IA, pare e transcreva ou descarte o áudio pendente. Isso evita manter áudio e modelos pesados juntos na memória.', 'error');
-    return null;
-  }
-
-  $('loadAiBtn').disabled = true;
-  $('loadModelBtn').disabled = true;
-  $('loadAiLabel').textContent = 'Preparando memória…';
-  setStatus('aiModelStatus', 'Liberando o modelo de voz, se estiver carregado, para reduzir o uso de memória antes de baixar a IA…');
-  setAiModelProgress(1);
-  let selectedWebGPU = false;
-  let aiWorker = null;
-
-  aiModelLoadPromise = (async () => {
-    try {
-      breadcrumb('ia:inicio', true);
-      if (transcriber) await releaseTranscriberForMemory();
-      // Impede o carregamento simultâneo de dois modelos pesados no navegador móvel.
-      $('loadModelBtn').disabled = true;
-      $('loadAiLabel').textContent = 'Carregando modelo…';
-      setStatus('aiModelStatus', 'Preparando o modelo generativo local. Use Wi-Fi, mantenha o Chrome aberto e evite alternar de aplicativo.');
-
-      let useWebGPU = false;
-      let gpuCap = { available: false, f16: false, reason: '' };
-      const mobileDevice = isMobileBrowser();
-      const forceCpu = !mobileDevice && $('loadAiBtn').dataset.forceCpu === 'true';
-      if (!forceCpu) {
-        gpuCap = await getWebGPUCapability();
-        useWebGPU = gpuCap.available && gpuCap.f16;
-      }
-
-      selectedWebGPU = useWebGPU;
-      if (mobileDevice && !useWebGPU) {
-        const unsupported = new Error((gpuCap.available && !gpuCap.f16 ? 'O WebGPU deste aparelho não oferece o recurso shader-f16, exigido pela variante q4f16. ' : 'O navegador não disponibilizou WebGPU. ') + 'Para evitar que o Chrome reinicie por falta de memória, o protótipo não tentará carregar o modelo maior em CPU/WASM no celular.');
-        unsupported.code = 'MOBILE_WEBGPU_UNAVAILABLE';
-        throw unsupported;
-      }
-
-      const modelOptions = useWebGPU
-        ? { device: 'webgpu', dtype: 'q4f16' }
-        : { device: 'wasm', dtype: 'q8' };
-
-      setStatus('aiModelStatus', useWebGPU
-        ? 'WebGPU detectado. Baixando e preparando o modelo quantizado. O download pode terminar antes da inicialização; não feche a página.'
-        : 'WebGPU não detectado. Tentando execução por CPU neste dispositivo não móvel…');
-
-      aiWorker = createAiWorker();
-      aiWorker.setProgress((info) => {
-          if (!info || typeof info !== 'object') return;
-          const status = info.status || '';
-          const file = info.file || info.name || '';
-          if (Number.isFinite(info.progress)) {
-            setAiModelProgress(info.progress);
-            setStatus('aiModelStatus', status === 'progress'
-              ? `Baixando componente da IA${file ? `: ${file}` : ''} (${Math.round(info.progress)}%).`
-              : status === 'done' ? `Componente preparado${file ? `: ${file}` : ''}; inicializando o modelo…` : `Preparando IA: ${status || 'carregando arquivos locais'}…`);
-          } else if (status) {
-            setStatus('aiModelStatus', `${status}${file ? `: ${file}` : ''}…`);
-          }
-      });
-      await aiWorker.load({ cdn: TRANSFORMERS_CDN, modelId: TEXT_MODEL_ID, ...modelOptions });
-      textGenerator = aiWorker;
-      breadcrumb('ia:carregada', false);
-
-      setAiModelProgress(100);
-      $('loadAiLabel').textContent = 'IA generativa pronta';
-      $('loadAiBtn').dataset.forceCpu = 'false';
-      $('organizeAiBtn').disabled = false;
-      setStatus('aiModelStatus', `Modelo de IA carregado (${useWebGPU ? 'WebGPU' : 'processador'}). A organização será executada neste navegador.`, 'success');
-      setStatus('aiStatus', 'IA pronta. Preencha ou transcreva o relato e toque em “Organizar relato com IA local”.', 'success');
-      return textGenerator;
-    } catch (error) {
-      if (aiWorker) { aiWorker.dispose(); aiWorker = null; }
-      breadcrumb(`ia:erro ${error?.message || ''}`.slice(0, 160), false);
-      textGenerator = null;
-      aiModelLoadPromise = null;
-      setAiModelProgress(0);
-      $('loadAiBtn').disabled = false;
-      $('loadModelBtn').disabled = false;
-      if (isMobileBrowser()) {
-        $('loadAiLabel').textContent = 'Tentar carregar IA novamente';
-        const msg = selectedWebGPU
-          ? 'O modelo não terminou de inicializar. Pode ser falta de memória, incompatibilidade do WebGPU ou falha de rede. Não tente forçar o modo CPU no celular; ele pode consumir ainda mais memória.'
-          : 'Este navegador não disponibilizou WebGPU. O modo CPU/WASM foi bloqueado neste celular para evitar um novo travamento. Tente atualizar o Chrome e o sistema; se continuar, este aparelho pode não suportar este modelo local.';
-        setStatus('aiModelStatus', `${msg} ${error?.message || ''}`, 'error');
-      } else if (selectedWebGPU) {
-        $('loadAiBtn').dataset.forceCpu = 'true';
-        $('loadAiLabel').textContent = 'Tentar modo CPU (mais lento)';
-        setStatus('aiModelStatus', `O carregamento pelo acelerador gráfico falhou. É possível tentar CPU/WASM neste computador, mas isso pode baixar outra variante de cerca de 512 MB. Detalhe: ${error?.message || 'erro desconhecido'}`, 'error');
-      } else {
-        $('loadAiLabel').textContent = 'Tentar carregar IA novamente';
-        setStatus('aiModelStatus', `Não foi possível carregar a IA local. Verifique conexão, memória e espaço livre. Detalhe: ${error?.message || 'erro desconhecido'}`, 'error');
-      }
-      throw error;
-    } finally {
-      $('loadModelBtn').disabled = Boolean(transcriber) || Boolean(aiModelLoadPromise && !textGenerator);
-      if (textGenerator) $('loadAiBtn').disabled = true;
-    }
-  })();
-  return aiModelLoadPromise;
-}
-
-function collectSourceForAI() {
-  const sections = [
-    ['objective', 'Objetivo informado'],
-    ['activity', 'Atividade e estratégias informadas'],
-    ['response', 'Resposta observada informada'],
-    ['supports', 'Apoios informados'],
-    ['continuity', 'Continuidade informada'],
-    ['free', 'Relato livre original']
-  ];
-  return sections
-    .map(([id, label]) => ({ label, value: $(id).value.trim() }))
-    .filter((item) => item.value)
-    .map((item) => `${item.label}:\n${item.value}`)
-    .join('\n\n');
-}
-
-function getGeneratedMessage(result) {
-  const generated = result?.[0]?.generated_text;
-  if (Array.isArray(generated)) {
-    const last = generated[generated.length - 1];
-    return typeof last?.content === 'string' ? last.content.trim() : '';
-  }
-  if (typeof generated === 'string') return generated.trim();
-  if (typeof result?.[0]?.text === 'string') return result[0].text.trim();
-  return '';
-}
-
-function parseStructuredJSON(generatedText) {
-  const firstBrace = generatedText.indexOf('{');
-  const lastBrace = generatedText.lastIndexOf('}');
-  if (firstBrace < 0 || lastBrace <= firstBrace) {
-    throw new Error('A IA não retornou um objeto estruturado válido. Tente novamente ou distribua o relato manualmente.');
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(generatedText.slice(firstBrace, lastBrace + 1));
-  } catch (_) {
-    throw new Error('A resposta da IA veio em formato inválido. Nenhum campo foi alterado; tente novamente.');
-  }
-
-  const keyAliases = {
-    objective: ['objetivo', 'objective'],
-    activity: ['atividade', 'activity'],
-    response: ['resposta_observada', 'resposta', 'response'],
-    supports: ['apoios', 'apoios_necessarios', 'supports'],
-    continuity: ['continuidade', 'proximos_passos', 'continuity']
-  };
-  const normalized = {};
-  for (const [key, aliases] of Object.entries(keyAliases)) {
-    const foundKey = aliases.find((alias) => Object.prototype.hasOwnProperty.call(parsed, alias));
-    if (!foundKey || typeof parsed[foundKey] !== 'string') {
-      throw new Error('A resposta da IA não contém todos os campos esperados. Nenhum campo foi alterado; tente novamente.');
-    }
-    normalized[key] = parsed[foundKey].trim();
-  }
-  return normalized;
-}
-
-async function organizeWithAI() {
-  if (!textGenerator) {
-    setStatus('aiStatus', 'Carregue o modelo de IA generativa antes de organizar o relato.', 'error');
-    return;
-  }
-
-  const source = collectSourceForAI();
-  if (!source) {
-    setStatus('aiStatus', 'Fale, transcreva ou preencha pelo menos um campo antes de organizar.', 'error');
-    return;
-  }
-
-  const originalFields = {
-    objective: $('objective').value.trim(),
-    activity: $('activity').value.trim(),
-    response: $('response').value.trim(),
-    supports: $('supports').value.trim(),
-    continuity: $('continuity').value.trim()
-  };
-
-  const messages = [
-    {
-      role: 'system',
-      content: `Você é um assistente de redação de evoluções de atendimento multidisciplinar em português brasileiro. Sua única tarefa é organizar e aprimorar a redação do conteúdo informado pelo profissional. Não faça avaliação clínica, diagnóstico, inferência, recomendação nem decisão terapêutica. REGRAS OBRIGATÓRIAS: (1) use apenas fatos presentes no conteúdo de entrada; (2) não invente comportamentos, quantidades, objetivos, intervenções, nível de ajuda, resultados ou próximos passos; (3) preserve números, frequência, contexto e o grau de certeza do relato; (4) se uma informação não foi fornecida, devolva uma string vazia para aquele campo; (5) não transforme impressões vagas em fatos objetivos; (6) não repita a mesma informação em vários campos sem necessidade; (7) escreva de forma concisa, profissional, respeitosa e não infantilizante; (8) não inclua nome ou identificação que não esteja no conteúdo; (9) responda SOMENTE com um objeto JSON válido, sem markdown e sem comentários, com exatamente estas chaves de texto: objetivo, atividade, resposta_observada, apoios, continuidade.`
-    },
-    {
-      role: 'user',
-      content: `Organize o conteúdo abaixo em uma evolução terapêutica. Não complete lacunas com suposições. Quando não houver dados para um campo, use uma string vazia.\n\n${source}\n\nRetorne exclusivamente este formato JSON:\n{"objetivo":"","atividade":"","resposta_observada":"","apoios":"","continuidade":""}`
-    }
-  ];
-
-  $('organizeAiBtn').disabled = true;
-  $('organizeAiBtn').textContent = 'Organizando…';
-  setStatus('aiStatus', 'A IA está organizando o relato no próprio navegador. Em celulares, isso pode levar algum tempo…');
-
-  try {
-    const result = await textGenerator.generate(messages, {
-      max_new_tokens: 400,
-      do_sample: false,
-      repetition_penalty: 1.05
-    });
-    const generatedText = getGeneratedMessage(result);
-    if (!generatedText) throw new Error('A IA não retornou texto. Tente novamente.');
-    const structured = parseStructuredJSON(generatedText);
-
-    // Preserve manually entered content when the small model unexpectedly returns an empty value.
-    for (const key of Object.keys(originalFields)) {
-      const finalValue = structured[key] || originalFields[key];
-      $(key).value = finalValue;
-      $(key).dispatchEvent(new Event('input', { bubbles: true }));
-    }
-
-    const finalText = buildEvolution();
-    if (!finalText) throw new Error('A IA respondeu, mas não foi possível montar a evolução. Confira os campos e tente novamente.');
-    setStatus('aiStatus', 'Rascunho organizado. Revise cada campo e o texto final: modelos locais pequenos podem errar ou omitir informações.', 'success');
-  } catch (error) {
-    setStatus('aiStatus', `Não foi possível organizar o relato com IA. ${error?.message || 'Tente novamente.'}`, 'error');
-  } finally {
-    $('organizeAiBtn').disabled = !textGenerator;
-    $('organizeAiBtn').textContent = 'Organizar relato com IA local';
-  }
-}
-
-async function loadTranscriber() {
-  if (transcriber) return transcriber;
-  if (modelLoadPromise) return modelLoadPromise;
-  if (isRecording) {
-    setStatus('modelStatus', 'Pare a gravação antes de trocar de modelo.', 'error');
-    return null;
-  }
-
-  $('loadModelBtn').disabled = true;
-  $('loadAiBtn').disabled = true;
-  $('loadModelLabel').textContent = 'Preparando memória…';
-  setStatus('modelStatus', 'Liberando a IA generativa, se estiver carregada, antes de preparar a transcrição…');
-  setModelProgress(2);
-
-  modelLoadPromise = (async () => {
-    try {
-      if (textGenerator) await releaseTextGeneratorForMemory();
-      $('loadAiBtn').disabled = true;
-      $('loadModelLabel').textContent = 'Carregando…';
-      const { pipeline, env } = await import(TRANSFORMERS_CDN);
-      env.useBrowserCache = true;
-      env.useWasmCache = true;
-      env.allowRemoteModels = true;
-      env.allowLocalModels = false;
-
-      transcriber = await pipeline(
-        'automatic-speech-recognition',
-        MODEL_ID,
-        {
-          dtype: 'q8',
-          progress_callback: (info) => {
-            if (!info || typeof info !== 'object') return;
-            const status = info.status || '';
-            const file = info.file || info.name || '';
-            if (Number.isFinite(info.progress)) {
-              setModelProgress(info.progress);
-              setStatus('modelStatus', status === 'progress'
-                ? `Baixando componente do modelo${file ? `: ${file}` : ''} (${Math.round(info.progress)}%).`
-                : status === 'done' ? `Componente preparado${file ? `: ${file}` : ''}.` : `Preparando: ${status || 'carregando arquivos locais'}…`);
-            } else if (status) {
-              setStatus('modelStatus', `${status}${file ? `: ${file}` : ''}…`);
-            }
-          }
+    speechRecognizer.onresult = (event) => {
+      let finalTranscript = '';
+      for (let i = event.resultIndex; i < event.results.length; ++i) {
+        if (event.results[i].isFinal) {
+          finalTranscript += event.results[i][0].transcript + ' ';
         }
-      );
-      setModelProgress(100);
-      setStatus('modelStatus', 'Modelo carregado. A transcrição será executada no navegador.', 'success');
-      $('loadModelLabel').textContent = 'Modelo de voz pronto';
-      $('recordBtn').disabled = false;
-      setStatus('recordStatus', 'Pronto. Escolha o campo e toque em “Gravar relato”.', 'success');
-      return transcriber;
-    } catch (error) {
-      transcriber = null;
-      modelLoadPromise = null;
-      setModelProgress(0);
-      $('loadModelBtn').disabled = false;
-      $('loadModelLabel').textContent = 'Tentar carregar novamente';
-      setStatus('modelStatus', `Não foi possível carregar o modelo. Confira a conexão e o espaço livre e tente novamente. Detalhe: ${error?.message || 'erro desconhecido'}`, 'error');
-      throw error;
-    } finally {
-      $('loadAiBtn').disabled = Boolean(textGenerator) || Boolean(modelLoadPromise && !transcriber);
-      if (transcriber) $('loadModelBtn').disabled = true;
-      else $('loadModelBtn').disabled = false;
-    }
-  })();
-  return modelLoadPromise;
-}
+      }
+      const target = dom.targetField.value;
+      if (dom[target]) {
+        dom[target].value = (dom[target].value + ' ' + finalTranscript).trim();
+      }
+    };
 
-function supportedMimeType() {
-  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/mp4',
-    'audio/webm',
-    'audio/ogg;codecs=opus'
-  ];
-  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || '';
-}
+    speechRecognizer.onerror = (event) => {
+      dom.recordStatus.textContent = `Aviso do microfone: ${event.error}`;
+      stopRecording();
+    };
 
-async function startRecording() {
-  if (!transcriber) {
-    setStatus('recordStatus', 'Carregue o modelo antes de gravar.', 'error');
-    return;
+    speechRecognizer.onend = () => {
+      stopRecording();
+    };
+
+    speechRecognizer.start();
+  } else {
+    dom.recordStatus.textContent = 'Navegador sem suporte a gravação nativa direta. Por favor, digite no campo abaixo.';
   }
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    setStatus('recordStatus', 'Este navegador não oferece gravação de áudio compatível. Atualize o navegador ou use a digitação manual nos campos.', 'error');
-    return;
-  }
-
-  try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    });
-    recordedChunks = [];
-    recordedBlob = null;
-    const mimeType = supportedMimeType();
-    recorder = new MediaRecorder(mediaStream, mimeType ? { mimeType } : undefined);
-    recorder.addEventListener('dataavailable', (event) => {
-      if (event.data && event.data.size > 0) recordedChunks.push(event.data);
-    });
-    recorder.addEventListener('stop', () => {
-      recordedBlob = new Blob(recordedChunks, { type: recorder?.mimeType || 'audio/webm' });
-      recordedChunks = [];
-      stopTracks();
-      isRecording = false;
-      clearInterval(timerInterval);
-      clearTimeout(recordingTimeout);
-      $('recordBtn').disabled = false;
-      $('recordBtn').classList.remove('recording');
-      $('recordBtn').innerHTML = '<span aria-hidden="true">●</span> Gravar novamente';
-      $('stopBtn').disabled = true;
-      $('transcribeBtn').disabled = !recordedBlob || recordedBlob.size === 0;
-      $('recordTitle').textContent = 'Relato gravado temporariamente';
-      $('recordDescription').textContent = 'O áudio permanece apenas na memória da página até a transcrição ou limpeza.';
-      $('recordIcon').textContent = '✓';
-      $('recordIcon').parentElement.classList.remove('active');
-      setStatus('recordStatus', recordedBlob?.size ? 'Áudio pronto para transcrever no dispositivo.' : 'Nenhum áudio foi capturado. Tente novamente.', recordedBlob?.size ? 'success' : 'error');
-    });
-
-    recorder.start(500);
-    isRecording = true;
-    startedAt = Date.now();
-    $('recordBtn').disabled = true;
-    $('recordBtn').classList.add('recording');
-    $('recordBtn').innerHTML = '<span aria-hidden="true">●</span> Gravando…';
-    $('stopBtn').disabled = false;
-    $('transcribeBtn').disabled = true;
-    $('targetField').disabled = true;
-    $('recordTitle').textContent = 'Gravação em andamento';
-    $('recordDescription').textContent = 'Fale em ambiente tranquilo. Toque em “Parar” quando terminar.';
-    $('recordIcon').textContent = '●';
-    $('recordIcon').parentElement.classList.add('active');
-    setStatus('recordStatus', 'Gravando somente após sua ação. Limite desta demonstração: 3 minutos.');
-    $('recordTimer').textContent = '00:00';
-    timerInterval = window.setInterval(() => {
-      $('recordTimer').textContent = formatTimer(Date.now() - startedAt);
-    }, 250);
-    recordingTimeout = window.setTimeout(() => {
-      if (isRecording) stopRecording();
-    }, 180000);
-  } catch (error) {
-    stopTracks();
-    setStatus('recordStatus', `Não foi possível acessar o microfone. Confira a permissão do navegador. ${error?.message || ''}`, 'error');
-  }
-}
-
-function stopTracks() {
-  if (mediaStream) {
-    for (const track of mediaStream.getTracks()) track.stop();
-    mediaStream = null;
-  }
-}
+});
 
 function stopRecording() {
-  if (recorder && isRecording && recorder.state !== 'inactive') {
-    try { recorder.stop(); } catch (error) { console.warn('Não foi possível parar o gravador.', error); }
-  }
-  stopTracks();
+  stopTimer();
+  dom.recordBtn.classList.remove('recording');
+  dom.recordBtn.disabled = false;
+  dom.stopBtn.disabled = true;
+  dom.recordTitle.textContent = 'Gravação finalizada';
+  dom.recordDescription.textContent = 'O texto falado foi inserido no campo selecionado.';
+  dom.recordIcon.classList.remove('active');
 }
 
-function resampleTo16k(audioBuffer) {
-  const targetRate = 16000;
-  const inputRate = audioBuffer.sampleRate;
-  const outputLength = Math.max(1, Math.floor(audioBuffer.duration * targetRate));
-  const numberOfChannels = audioBuffer.numberOfChannels;
-  const channels = [];
-  for (let channel = 0; channel < numberOfChannels; channel++) channels.push(audioBuffer.getChannelData(channel));
-  const output = new Float32Array(outputLength);
-  const ratio = inputRate / targetRate;
-
-  for (let i = 0; i < outputLength; i++) {
-    const position = i * ratio;
-    const index = Math.floor(position);
-    const blend = position - index;
-    let sample = 0;
-    for (const channel of channels) {
-      const left = channel[index] || 0;
-      const right = channel[index + 1] ?? left;
-      sample += left + (right - left) * blend;
-    }
-    output[i] = sample / channels.length;
+dom.stopBtn.addEventListener('click', () => {
+  if (speechRecognizer) {
+    speechRecognizer.stop();
   }
-  return output;
-}
+  stopRecording();
+});
 
-async function transcribeRecording() {
-  if (!transcriber) {
-    setStatus('recordStatus', 'O modelo ainda não está pronto.', 'error');
-    return;
-  }
-  if (!recordedBlob || recordedBlob.size === 0) {
-    setStatus('recordStatus', 'Grave um relato antes de transcrever.', 'error');
+// ==========================================
+// ORGANIZAÇÃO COM A IA LOCAL
+// ==========================================
+dom.organizeAiBtn.addEventListener('click', () => {
+  const freeText = dom.free.value.trim();
+  if (!freeText && !dom.objective.value && !dom.activity.value) {
+    dom.aiStatus.textContent = 'Por favor, insira ou dite um relato no campo "Relato original" antes de organizar.';
+    dom.aiStatus.setAttribute('data-kind', 'error');
     return;
   }
 
-  $('transcribeBtn').disabled = true;
-  $('recordBtn').disabled = true;
-  $('targetField').disabled = true;
-  $('transcribeBtn').textContent = 'Transcrevendo…';
-  setStatus('recordStatus', 'Convertendo o áudio e transcrevendo no dispositivo. O tempo varia conforme o celular…');
+  dom.organizeAiBtn.disabled = true;
+  dom.aiStatus.textContent = 'Processando com a IA no dispositivo...';
 
-  try {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) throw new Error('Este navegador não oferece decodificação de áudio compatível.');
-    const context = new AudioContextClass();
-    try {
-      const audioData = await recordedBlob.arrayBuffer();
-      const decoded = await context.decodeAudioData(audioData.slice(0));
-      if (decoded.duration > 180) throw new Error('O áudio ultrapassou o limite de três minutos.');
-      const samples = resampleTo16k(decoded);
-      const result = await transcriber(samples, {
-        language: 'portuguese',
-        task: 'transcribe',
-        chunk_length_s: 30,
-        stride_length_s: 5
-      });
-      const transcript = (typeof result === 'string' ? result : result?.text || '').trim();
-      if (!transcript) throw new Error('Nenhuma fala foi reconhecida. Tente falar mais perto do microfone.');
-      const target = $( $('targetField').value );
-      const existing = target.value.trim();
-      target.value = existing ? `${existing}${/[.!?]$/.test(existing) ? ' ' : '. '}${transcript}` : transcript;
-      target.dispatchEvent(new Event('input', { bubbles: true }));
-      recordedBlob = null;
-      recordedChunks = [];
-      $('recordTimer').textContent = '00:00';
-      $('recordTitle').textContent = 'Transcrição inserida';
-      $('recordDescription').textContent = `Texto adicionado a “${friendlyFieldNames[$('targetField').value]}”. Revise o conteúdo.`;
-      setStatus('recordStatus', 'Transcrição concluída localmente. Revise nomes técnicos, pontuação e conteúdo antes de usar.', 'success');
-    } finally {
-      await context.close().catch(() => {});
-    }
-  } catch (error) {
-    setStatus('recordStatus', `Não foi possível transcrever este áudio. ${error?.message || 'Tente novamente.'}`, 'error');
-  } finally {
-    recordedBlob = null;
-    recordedChunks = [];
-    $('transcribeBtn').disabled = true;
-    $('transcribeBtn').textContent = 'Transcrever no dispositivo';
-    $('recordBtn').disabled = !transcriber;
-    $('targetField').disabled = false;
-    if ($('recordBtn').classList.contains('recording')) $('recordBtn').classList.remove('recording');
+  const userContext = `
+Especialidade: ${dom.specialty.value}
+Modalidade: ${dom.modality.value}
+Relato da sessão: ${freeText}
+
+Campos atuais:
+- Objetivo terapêutico: ${dom.objective.value}
+- Atividade e estratégias: ${dom.activity.value}
+- Resposta observada: ${dom.response.value}
+- Apoios necessários: ${dom.supports.value}
+- Continuidade / próximos passos: ${dom.continuity.value}
+
+Instrução: Reorganize as informações acima distribuindo-as estritamente no seguinte padrão:
+[OBJETIVO]: Habilidade ou meta trabalhada.
+[ATIVIDADE]: Descrição da atividade realizada e intervenções.
+[RESPOSTA]: Comportamentos do paciente efetivamente observados na sessão.
+[APOIOS]: Pistas visuais, verbais ou físicas dadas.
+[CONTINUIDADE]: Próximos passos planejados.
+Deixe o campo vazio se não foi citado. Nunca invente dados.
+`;
+
+  aiWorker.postMessage({
+    type: 'ORGANIZE_TEXT',
+    payload: { prompt: userContext }
+  });
+});
+
+function applyStructuredOutput(text) {
+  const getSection = (tag) => {
+    const regex = new RegExp(`\\[${tag}\\]:?\\s*([\\s\\S]*?)(?=\\[[A-Z]+\\]|$)`, 'i');
+    const match = text.match(regex);
+    return match ? match[1].trim() : '';
+  };
+
+  const obj = getSection('OBJETIVO');
+  const act = getSection('ATIVIDADE');
+  const resp = getSection('RESPOSTA');
+  const supp = getSection('APOIOS');
+  const cont = getSection('CONTINUIDADE');
+
+  if (obj) dom.objective.value = obj;
+  if (act) dom.activity.value = act;
+  if (resp) dom.response.value = resp;
+  if (supp) dom.supports.value = supp;
+  if (cont) dom.continuity.value = cont;
+
+  // Fallback: se o formato não vier com as tags, insere na área de revisão
+  if (!obj && !act && !resp && !supp && !cont) {
+    dom.outputText.value = text;
   }
 }
 
-function dateForDisplay(value) {
-  if (!value) return '';
-  const parts = value.split('-').map(Number);
-  if (parts.length !== 3 || parts.some(Number.isNaN)) return value;
-  return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(parts[0], parts[1] - 1, parts[2]));
-}
+// ==========================================
+// ETAPA 5: REVISÃO E MONTAGEM DA EVOLUÇÃO
+// ==========================================
+dom.generateBtn.addEventListener('click', () => {
+  const dateFormatted = dom.sessionDate.value
+    ? dom.sessionDate.value.split('-').reverse().join('/')
+    : 'Data não informada';
 
-function buildEvolution() {
-  const specialty = $('specialty').value.trim();
-  const modality = $('modality').value.trim();
-  const date = dateForDisplay($('sessionDate').value);
-  const content = [];
-  content.push('EVOLUÇÃO DE ATENDIMENTO');
-  if (date) content.push(`Data: ${date}`);
-  if (specialty) content.push(`Especialidade: ${specialty}`);
-  if (modality) content.push(`Modalidade: ${modality}`);
-  content.push('');
-
-  const sections = [
-    ['objective', 'Objetivo terapêutico'],
-    ['activity', 'Atividade e estratégias'],
-    ['response', 'Resposta observada'],
-    ['supports', 'Apoios necessários'],
-    ['continuity', 'Continuidade / próximos passos']
+  const lines = [
+    `EVOLUÇÃO TERAPÊUTICA — PAVM`,
+    `Data do Atendimento: ${dateFormatted}`,
+    `Especialidade: ${dom.specialty.value}`,
+    `Modalidade: ${dom.modality.value}`,
+    `--------------------------------------------------`,
+    `1. OBJETIVO TERAPÊUTICO:`,
+    dom.objective.value.trim() || 'Não informado / Não trabalhado.',
+    ``,
+    `2. ATIVIDADE E ESTRATÉGIAS:`,
+    dom.activity.value.trim() || 'Não informado.',
+    ``,
+    `3. RESPOSTA OBSERVADA:`,
+    dom.response.value.trim() || 'Sem intercorrências ou registros específicos.',
+    ``,
+    `4. APOIOS NECESSÁRIOS:`,
+    dom.supports.value.trim() || 'Nenhum apoio adicional relatado.',
+    ``,
+    `5. CONTINUIDADE / PRÓXIMOS PASSOS:`,
+    dom.continuity.value.trim() || 'Seguimento do plano terapêutico singular.',
+    `--------------------------------------------------`,
+    `Nota: Documento conferido e revisado pelo profissional responsável.`
   ];
-  const populated = sections.filter(([id]) => $(id).value.trim());
-  if (populated.length === 0) {
-    setStatus('copyStatus', 'Preencha pelo menos um campo antes de montar a evolução.', 'error');
-    return '';
-  }
-  for (const [id, label] of populated) {
-    content.push(`${label}:`);
-    content.push($(id).value.trim());
-    content.push('');
-  }
-  content.push('Registro organizado a partir do relato do profissional; revisar e validar antes de inserir no prontuário.');
-  lastGenerated = content.join('\n').trim();
-  $('outputText').value = lastGenerated;
-  $('copyBtn').disabled = false;
-  setStatus('copyStatus', 'Texto montado. Revise antes de copiar.', 'success');
-  return lastGenerated;
-}
 
-async function copyOutput() {
-  const value = $('outputText').value.trim();
-  if (!value) return;
+  dom.outputText.value = lines.join('\n');
+  dom.copyBtn.disabled = false;
+  dom.copyStatus.textContent = 'Evolução montada. Revise o texto acima antes de copiar.';
+  dom.copyStatus.setAttribute('data-kind', 'success');
+});
+
+dom.copyBtn.addEventListener('click', async () => {
+  if (!dom.outputText.value.trim()) return;
   try {
-    await navigator.clipboard.writeText(value);
-    setStatus('copyStatus', 'Texto copiado para a área de transferência do aparelho.', 'success');
-  } catch (error) {
-    $('outputText').focus();
-    $('outputText').select();
-    setStatus('copyStatus', 'Não foi possível copiar automaticamente. O texto foi selecionado para você copiar manualmente.');
+    await navigator.clipboard.writeText(dom.outputText.value);
+    dom.copyStatus.textContent = 'Texto copiado com sucesso para a área de transferência!';
+    dom.copyStatus.setAttribute('data-kind', 'success');
+  } catch (err) {
+    dom.copyStatus.textContent = 'Não foi possível copiar automaticamente. Selecione e copie manualmente.';
+    dom.copyStatus.setAttribute('data-kind', 'error');
   }
-}
+});
 
-function clearAll() {
-  if (isRecording) stopRecording();
-  clearInterval(timerInterval);
-  clearTimeout(recordingTimeout);
-  stopTracks();
-  recordedChunks = [];
-  recordedBlob = null;
-  for (const id of fields) $(id).value = '';
-  $('outputText').value = '';
-  $('recordTimer').textContent = '00:00';
-  $('recordTitle').textContent = 'Pronto para gravar';
-  $('recordDescription').textContent = 'O microfone só ficará ativo depois de você tocar em “Gravar relato”.';
-  $('recordIcon').textContent = '●';
-  $('recordIcon').parentElement.classList.remove('active');
-  $('recordBtn').classList.remove('recording');
-  $('recordBtn').innerHTML = '<span aria-hidden="true">●</span> Gravar relato';
-  $('recordBtn').disabled = !transcriber;
-  $('stopBtn').disabled = true;
-  $('transcribeBtn').disabled = true;
-  $('transcribeBtn').textContent = 'Transcrever no dispositivo';
-  $('targetField').disabled = false;
-  $('copyBtn').disabled = true;
-  lastGenerated = '';
-  setStatus('recordStatus', transcriber ? 'Campos limpos. Pronto para um novo relato.' : 'Carregue o modelo para habilitar a gravação.');
-  setStatus('copyStatus', '');
-}
-
-function init() {
-  const today = new Date();
-  $('sessionDate').value = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  $('loadModelBtn').addEventListener('click', () => loadTranscriber().catch(() => {}));
-  $('loadAiBtn').addEventListener('click', () => loadTextGenerator().catch(() => {}));
-  $('organizeAiBtn').addEventListener('click', organizeWithAI);
-  $('recordBtn').addEventListener('click', startRecording);
-  $('stopBtn').addEventListener('click', stopRecording);
-  $('transcribeBtn').addEventListener('click', transcribeRecording);
-  $('generateBtn').addEventListener('click', buildEvolution);
-  $('copyBtn').addEventListener('click', copyOutput);
-  $('clearBtn').addEventListener('click', clearAll);
-  $('diagBtn').addEventListener('click', runDiagnostics);
-  $('diagCopyBtn').addEventListener('click', copyDiagnostics);
-  reportInterruptedLoad();
-
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-    setStatus('recordStatus', 'Este navegador pode não ser compatível com gravação de áudio. Os campos também aceitam digitação manual.');
+dom.clearBtn.addEventListener('click', () => {
+  if (confirm('Deseja limpar todos os campos deste atendimento?')) {
+    dom.objective.value = '';
+    dom.activity.value = '';
+    dom.response.value = '';
+    dom.supports.value = '';
+    dom.continuity.value = '';
+    dom.free.value = '';
+    dom.outputText.value = '';
+    dom.copyBtn.disabled = true;
+    dom.copyStatus.textContent = 'Campos limpos com sucesso.';
   }
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && isRecording) stopRecording();
-  });
-  window.addEventListener('pagehide', () => {
-    if (isRecording) stopRecording();
-    stopTracks();
-  });
-}
-
-init();
+});

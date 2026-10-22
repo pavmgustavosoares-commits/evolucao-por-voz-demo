@@ -1,5 +1,5 @@
-const CACHE_NAME = 'evolucao-voz-shell-v4';
-const APP_SHELL = [
+const CACHE_NAME = 'evolucao-voz-v2.1';
+const STATIC_ASSETS = [
   './',
   './index.html',
   './styles.css',
@@ -10,32 +10,49 @@ const APP_SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
+  );
   self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME && key.startsWith('evolucao-voz-shell-')).map((key) => caches.delete(key))))
+    caches.keys().then((keys) =>
+      Promise.all(
+        keys.map((key) => {
+          if (key !== CACHE_NAME) {
+            return caches.delete(key);
+          }
+        })
+      )
+    )
   );
   self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
-  const request = event.request;
-  if (request.method !== 'GET') return;
-  const url = new URL(request.url);
-  if (url.origin !== self.location.origin) return;
-  if (request.mode === 'navigate') {
-    event.respondWith(fetch(request).then((response) => {
-      const clone = response.clone();
-      caches.open(CACHE_NAME).then((cache) => cache.put('./index.html', clone));
-      return response;
-    }).catch(() => caches.match('./index.html')));
-    return;
+  const url = new URL(event.request.url);
+
+  // CRUCIAL PARA PREVENIR O CRASH DO CHROME NO CELULAR:
+  // Nunca intercepte nem tente cachear arquivos gigantes de modelos ONNX
+  // ou chamadas de CDN via Service Worker. Deixe o Cache API do Transformers.js gerenciar.
+  if (
+    url.hostname.includes('huggingface.co') ||
+    url.hostname.includes('hf.co') ||
+    url.pathname.endsWith('.onnx') ||
+    url.pathname.endsWith('.bin') ||
+    url.pathname.endsWith('.wasm')
+  ) {
+    return; // Passa direto para a rede nativa
   }
-  event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then((response) => {
-    if (response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()));
-    return response;
-  })));
+
+  event.respondWith(
+    caches.match(event.request).then((cachedResponse) => {
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+      return fetch(event.request);
+    })
+  );
 });
