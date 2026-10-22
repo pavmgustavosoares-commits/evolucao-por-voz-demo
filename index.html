@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#165b49">
+  <meta name="description" content="Protótipo de evolução terapêutica por voz, com transcrição local no navegador.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <title>Evolução por Voz</title>
+</head>
+<body>
+  <main class="app-shell">
+    <header class="app-header">
+      <div class="brand-mark" aria-hidden="true"><span>EV</span></div>
+      <div class="brand-copy">
+        <p class="eyebrow">PROTÓTIPO · USO DEMONSTRATIVO</p>
+        <h1>Evolução por Voz</h1>
+        <p class="subtitle">Do relato falado para o modelo de evolução.</p>
+      </div>
+      <span class="privacy-pill"><span class="privacy-dot"></span> Local</span>
+    </header>
+
+    <section class="notice notice-warning" aria-label="Aviso de privacidade">
+      <div class="notice-icon" aria-hidden="true">!</div>
+      <div>
+        <strong>Use somente dados fictícios neste protótipo.</strong>
+        <p>Foi desenhado para não enviar áudio ou texto clínico a uma API. Mesmo assim, ainda precisa de validação técnica, institucional e de segurança antes de qualquer uso com pacientes reais.</p>
+      </div>
+    </section>
+
+    <section class="card model-card">
+      <div class="card-heading">
+        <div>
+          <p class="eyebrow">ETAPA 1</p>
+          <h2>Preparar transcrição local</h2>
+        </div>
+        <span class="step-number">01</span>
+      </div>
+      <p class="muted">Na primeira utilização, é necessário estar conectado à internet para carregar a biblioteca e baixar o modelo de reconhecimento de voz. A transcrição é executada no navegador; o áudio não é enviado ao serviço do modelo.</p>
+      <button id="loadModelBtn" class="button button-primary button-wide" type="button">
+        <span class="button-icon" aria-hidden="true">⇩</span>
+        <span id="loadModelLabel">Carregar modelo no dispositivo</span>
+      </button>
+      <div id="modelStatus" class="status-line" role="status" aria-live="polite">Modelo ainda não carregado.</div>
+      <div class="progress-track" aria-hidden="true"><div id="modelProgress" class="progress-fill"></div></div>
+      <p class="microcopy">O download pode ocupar bastante espaço e o desempenho depende do celular. O navegador pode manter o modelo em cache, mas o funcionamento totalmente offline deve ser testado em cada aparelho.</p>
+    </section>
+
+    <section class="card model-card">
+      <div class="card-heading">
+        <div>
+          <p class="eyebrow">ETAPA 2</p>
+          <h2>Preparar IA generativa local</h2>
+        </div>
+        <span class="step-number">02</span>
+      </div>
+      <p class="muted">Este modelo de linguagem reescreve e organiza o relato no próprio navegador. A versão escolhida é pequena para tentar funcionar em celulares, mas o download é grande: cerca de 483 MB para os pesos quantizados, além da biblioteca e do modelo de voz. Use Wi-Fi e espaço livre.</p>
+      <button id="loadAiBtn" class="button button-primary button-wide" type="button">
+        <span class="button-icon" aria-hidden="true">⇩</span>
+        <span id="loadAiLabel">Carregar IA generativa no dispositivo</span>
+      </button>
+      <div id="aiModelStatus" class="status-line" role="status" aria-live="polite">IA generativa ainda não carregada.</div>
+      <div class="progress-track" aria-hidden="true"><div id="aiModelProgress" class="progress-fill"></div></div>
+      <p class="microcopy">O modelo escolhido é Qwen2.5-0.5B-Instruct quantizado, executado localmente com Transformers.js. A primeira carga precisa de internet para baixar biblioteca e pesos. O navegador faz o download de arquivos públicos, mas o áudio e o texto do atendimento não são enviados ao serviço de IA pela lógica deste app.</p>
+    </section>
+
+    <section class="card">
+      <div class="card-heading">
+        <div>
+          <p class="eyebrow">ETAPA 3</p>
+          <h2>Configurar atendimento</h2>
+        </div>
+        <span class="step-number">03</span>
+      </div>
+      <div class="form-grid">
+        <label class="field-label" for="specialty">Especialidade
+          <select id="specialty">
+            <option>Psicologia</option>
+            <option>Fonoaudiologia</option>
+            <option>Terapia Ocupacional</option>
+            <option>Fisioterapia</option>
+            <option>Pedagogia</option>
+            <option>Arteterapia</option>
+            <option>Atendimento multidisciplinar</option>
+            <option>Outra</option>
+          </select>
+        </label>
+        <label class="field-label" for="modality">Modalidade
+          <select id="modality">
+            <option>Individual</option>
+            <option>Grupo</option>
+            <option>Compartilhado por dois profissionais</option>
+          </select>
+        </label>
+        <label class="field-label" for="sessionDate">Data do atendimento
+          <input id="sessionDate" type="date">
+        </label>
+      </div>
+      <p class="microcopy">Não há campo para nome ou código do paciente. Identifique o paciente apenas no prontuário institucional autorizado.</p>
+    </section>
+
+    <section class="card">
+      <div class="card-heading">
+        <div>
+          <p class="eyebrow">ETAPA 4</p>
+          <h2>Falar e preencher</h2>
+        </div>
+        <span class="step-number">04</span>
+      </div>
+      <p class="muted">Fale naturalmente, como se estivesse contando a um colega como foi o atendimento. A transcrição vai para o relato livre; depois, a IA local tentará organizar o texto nos campos abaixo. Você também pode preencher ou corrigir os campos manualmente.</p>
+
+      <label class="field-label" for="targetField">Vou ditar para esta seção
+        <select id="targetField">
+          <option value="free" selected>Relato livre para a IA organizar</option>
+          <option value="objective">Objetivo terapêutico</option>
+          <option value="activity">Atividade e estratégias</option>
+          <option value="response">Resposta observada</option>
+          <option value="supports">Apoios necessários</option>
+          <option value="continuity">Continuidade / próximos passos</option>
+        </select>
+      </label>
+
+      <div class="record-panel">
+        <div class="record-icon" aria-hidden="true"><span id="recordIcon">●</span></div>
+        <div class="record-copy">
+          <strong id="recordTitle">Pronto para gravar</strong>
+          <p id="recordDescription">O microfone só ficará ativo depois de você tocar em “Gravar relato”.</p>
+        </div>
+        <div id="recordTimer" class="timer" aria-label="Duração da gravação">00:00</div>
+      </div>
+      <div class="record-actions">
+        <button id="recordBtn" class="button button-record" type="button" disabled><span aria-hidden="true">●</span> Gravar relato</button>
+        <button id="stopBtn" class="button button-secondary" type="button" disabled>Parar</button>
+      </div>
+      <button id="transcribeBtn" class="button button-primary button-wide" type="button" disabled>Transcrever no dispositivo</button>
+      <div id="recordStatus" class="status-line" role="status" aria-live="polite">Carregue o modelo para habilitar a gravação.</div>
+
+      <div class="divider"></div>
+      <div class="editor-heading">
+        <h3>Revisar campos da evolução</h3>
+        <span class="micro-tag">editável</span>
+      </div>
+      <div class="fields-stack">
+        <label class="field-label" for="objective">Objetivo terapêutico
+          <textarea id="objective" rows="2" placeholder="Habilidade ou objetivo trabalhado, conforme observado."></textarea>
+        </label>
+        <label class="field-label" for="activity">Atividade e estratégias
+          <textarea id="activity" rows="3" placeholder="Atividade realizada e estratégias utilizadas."></textarea>
+        </label>
+        <label class="field-label" for="response">Resposta observada
+          <textarea id="response" rows="3" placeholder="Descrever comportamentos e respostas efetivamente observados."></textarea>
+        </label>
+        <label class="field-label" for="supports">Apoios necessários
+          <textarea id="supports" rows="2" placeholder="Pistas, ajudas ou recursos utilizados, se relatados."></textarea>
+        </label>
+        <label class="field-label" for="continuity">Continuidade / próximos passos
+          <textarea id="continuity" rows="2" placeholder="Planejamento informado pelo profissional, quando pertinente."></textarea>
+        </label>
+        <label class="field-label" for="free">Relato original (entrada para a IA)
+          <textarea id="free" rows="4" placeholder="Ex.: Hoje trabalhei comunicação funcional com um jogo de cartas. O paciente fez dois pedidos espontâneos e precisou de ajuda para esperar a vez."></textarea>
+        </label>
+      </div>
+
+      <div class="ai-action-panel">
+        <div class="editor-heading">
+          <h3>Organizar com IA generativa</h3>
+          <span class="micro-tag">local no dispositivo</span>
+        </div>
+        <p class="muted">A IA vai considerar o relato original e os campos já preenchidos, melhorar a redação e distribuir as informações. Ela deve deixar em branco o que não foi informado — revise cuidadosamente para detectar erros ou informações inventadas.</p>
+        <button id="organizeAiBtn" class="button button-primary button-wide" type="button" disabled>Organizar relato com IA local</button>
+        <div id="aiStatus" class="status-line" role="status" aria-live="polite">Carregue o modelo de IA para habilitar a organização.</div>
+      </div>
+    </section>
+
+    <section class="card output-card">
+      <div class="card-heading">
+        <div>
+          <p class="eyebrow">ETAPA 5</p>
+          <h2>Revisar e gerar evolução</h2>
+        </div>
+        <span class="step-number">05</span>
+      </div>
+      <p class="muted">Depois da organização, confira os campos e ajuste tudo o que for necessário. O texto final é montado a partir dos campos estruturados, sem incluir o relato original bruto.</p>
+      <button id="generateBtn" class="button button-primary button-wide" type="button">Montar texto da evolução</button>
+      <label class="field-label output-label" for="outputText">Texto final para revisão
+        <textarea id="outputText" rows="12" placeholder="A evolução organizada aparecerá aqui depois de tocar em “Montar texto da evolução”."></textarea>
+      </label>
+      <div class="output-actions">
+        <button id="copyBtn" class="button button-secondary" type="button" disabled>Copiar texto</button>
+        <button id="clearBtn" class="button button-danger" type="button">Limpar atendimento</button>
+      </div>
+      <p id="copyStatus" class="status-line" role="status" aria-live="polite"></p>
+    </section>
+
+    <footer class="app-footer">
+      <div class="footer-lock" aria-hidden="true">◈</div>
+      <div>
+        <strong>Sem cadastro, sem histórico e sem salvamento automático.</strong>
+        <p>Os campos ficam apenas na memória desta página. Ao fechar ou atualizar, podem ser perdidos. Ao copiar, o conteúdo passa para a área de transferência do aparelho. Não use dados identificáveis no protótipo.</p>
+      </div>
+    </footer>
+  </main>
+  <script type="module" src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+    }
+  </script>
+</body>
+</html>

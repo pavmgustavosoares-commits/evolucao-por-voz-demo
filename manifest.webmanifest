@@ -1,0 +1,15 @@
+{
+  "name": "Evolução por Voz",
+  "short_name": "Evolução Voz",
+  "description": "Protótipo local de transcrição e organização generativa de evolução terapêutica.",
+  "lang": "pt-BR",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4f7f5",
+  "theme_color": "#165b49",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
